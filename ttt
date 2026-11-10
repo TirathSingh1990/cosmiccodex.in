@@ -1,0 +1,198 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<meta name="theme-color" content="#151b23">
+<title>Tilt Maze - Ball Balance</title>
+<style>
+:root{--bg:#151b23;--panel:#202a36;--gold:#e6b65d;--muted:#aeb9c7}
+*{box-sizing:border-box}
+body{margin:0;min-height:100vh;background:radial-gradient(ellipse at top,#344252,#151b23 68%);color:#f4f1e9;font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;display:flex;justify-content:center;padding:18px 13px 28px;overflow-x:hidden}
+.app{width:min(100%,560px)}
+header{text-align:center;margin:4px 0 16px}
+.kicker{font-size:10px;letter-spacing:3px;color:var(--gold);font-weight:800}
+h1{font-size:clamp(30px,8vw,42px);letter-spacing:2px;margin:3px 0}
+.subtitle{font-size:13px;color:var(--muted)}
+.stats{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin:16px 0 12px}
+.stat{background:#202a36;border:1px solid #465364;border-radius:12px;padding:9px;text-align:center}
+.stat span{display:block;color:#aeb9c7;text-transform:uppercase;font-size:10px;letter-spacing:1px}
+.stat b{font-size:20px;font-variant-numeric:tabular-nums}
+.stage{padding:10px;border-radius:18px;background:linear-gradient(145deg,#354352,#1b2530);border:1px solid #687584;box-shadow:0 16px 40px #0008}
+canvas{display:block;width:100%;height:auto;aspect-ratio:1;border-radius:11px;touch-action:none}
+.status{text-align:center;min-height:22px;font-size:12px;color:#c4ced9;margin:12px 0 5px}
+.controls{display:flex;justify-content:center;gap:8px;flex-wrap:wrap}
+button{border:1px solid #657386;background:linear-gradient(#3a485a,#273443);color:#fff;border-radius:11px;padding:11px 15px;font-weight:750;font-size:12px;box-shadow:0 3px 0 #10161d;cursor:pointer}
+button:active{transform:translateY(2px);box-shadow:0 1px 0 #10161d}
+button.primary{background:linear-gradient(#f0c875,#d59a3e);color:#302313;border-color:#f8d998}
+button:disabled{opacity:.5}
+.instructions{margin:15px 2px 0;background:#202a36;border:1px solid #3c4b5d;border-radius:12px;padding:12px;color:#c2ccd7;font-size:12px;line-height:1.55}
+.instructions strong{color:#f0d18c}
+.overlay{display:none;margin-top:13px;text-align:center;padding:14px;background:#263b30;border:1px solid #6f9b6e;border-radius:13px}
+.overlay.show{display:block}
+.overlay.fail{background:#442d2c;border-color:#a66b5c}
+.overlay b{font-size:21px;display:block}
+.overlay p{font-size:12px;margin:5px 0 10px;color:#d8ded8}
+footer{text-align:center;color:#7f8c9c;font-size:10px;margin-top:16px}
+@media(max-width:380px){body{padding:12px 9px}.stage{padding:7px}}
+</style>
+</head>
+<body>
+<main class="app">
+<header><div class="kicker">STEADY HANDS. SMART TILTS.</div><h1>TILT MAZE</h1><div class="subtitle">Balance the board. Guide the ball into the golden goal.</div></header>
+<div class="stats">
+ <div class="stat"><span>Level</span><b id="level">01</b></div>
+ <div class="stat"><span>Falls</span><b id="falls">0</b></div>
+ <div class="stat"><span>Target</span><b>GOLD</b></div>
+</div>
+<div class="stage"><canvas id="game" width="720" height="720" aria-label="Tilt maze game board"></canvas></div>
+<div class="status" id="status">Tap “Enable motion” and gently tilt your phone.</div>
+<div class="controls">
+ <button class="primary" id="enable">Enable motion</button>
+ <button id="calibrate">Calibrate level</button>
+ <button id="restart">Restart</button>
+</div>
+<div class="overlay" id="overlay"><b id="result">You won!</b><p id="resultText">The ball reached the target.</p><button class="primary" id="next">Next level</button></div>
+<div class="instructions">
+ <strong>How to play</strong><br>
+ 1. Hold your phone flat and tap <strong>Enable motion</strong>. Allow motion/orientation access if asked.<br>
+ 2. Tilt your phone gently to roll the ball. Tap <strong>Calibrate level</strong> whenever the board is resting flat in your hands.<br>
+ 3. Reach the glowing golden hole. Any dark hole or the board edge is a fall — game over.<br>
+ <span style="color:#92a4b7">Tip: Play in portrait orientation. Motion sensors generally require HTTPS (or localhost).</span>
+</div>
+<footer>Designed for mobile browsers · No external libraries or assets</footer>
+</main>
+<script>
+(()=>{
+const canvas=document.getElementById('game'),ctx=canvas.getContext('2d');
+const W=720, margin=52, boardSize=616, min=margin, max=margin+boardSize;
+const ball={x:105,y:110,vx:0,vy:0,r:17};
+let level=0,falls=0,active=false,won=false,dead=false;
+let sensorReady=false,baseBeta=null,baseGamma=null,tiltX=0,tiltY=0,lastTime=0;
+const levels=[
+ {start:[105,110],goal:[610,600],holes:[[300,175,29],[510,315,31],[190,475,28],[420,525,27]],walls:[[245,75,28,250],[390,230,28,280],[75,365,245,26],[490,75,28,155]]},
+ {start:[105,600],goal:[610,105],holes:[[260,570,29],[450,450,30],[235,300,27],[525,260,28],[370,130,26]],walls:[[180,80,28,300],[340,250,28,380],[470,75,28,250],[75,380,230,26]]},
+ {start:[100,100],goal:[610,610],holes:[[270,110,27],[480,180,29],[180,350,29],[520,410,30],[300,540,27]],walls:[[210,75,28,270],[360,210,28,300],[510,75,28,210],[75,470,230,26],[400,550,245,25]]}
+];
+function current(){return levels[level%levels.length]}
+function setStatus(t){document.getElementById('status').textContent=t}
+function reset(){
+ const l=current();ball.x=l.start[0];ball.y=l.start[1];ball.vx=ball.vy=0;
+ active=true;won=dead=false;document.getElementById('overlay').className='overlay';
+ document.getElementById('level').textContent=String(level+1).padStart(2,'0');
+ setStatus(sensorReady?'Tilt gently to roll the ball.':'Enable motion to control the board.');
+ draw();
+}
+function roundRect(c,x,y,w,h,r){c.beginPath();c.roundRect(x,y,w,h,r)}
+function draw(){
+ ctx.clearRect(0,0,W,W);
+ // board frame
+ const g=ctx.createLinearGradient(20,20,690,700);g.addColorStop(0,'#a77a45');g.addColorStop(.5,'#67452c');g.addColorStop(1,'#35251c');
+ roundRect(ctx,15,15,690,690,28);ctx.fillStyle=g;ctx.fill();ctx.strokeStyle='#d5ae73';ctx.lineWidth=7;ctx.stroke();
+ // wooden play surface
+ const wood=ctx.createLinearGradient(45,45,680,680);wood.addColorStop(0,'#c18a4e');wood.addColorStop(.45,'#a86f3c');wood.addColorStop(1,'#80502e');
+ roundRect(ctx,min,min,boardSize,boardSize,10);ctx.fillStyle=wood;ctx.fill();
+ ctx.save();roundRect(ctx,min,min,boardSize,boardSize,10);ctx.clip();
+ for(let i=0;i<22;i++){let y=min+i*29;ctx.strokeStyle=i%2?'#57371f22':'#f3c17a26';ctx.lineWidth=3;ctx.beginPath();ctx.moveTo(min,y);ctx.bezierCurveTo(220,y-8,450,y+8,max,y-2);ctx.stroke()}
+ for(let i=0;i<16;i++){ctx.fillStyle='#5c371e22';ctx.beginPath();ctx.ellipse(90+(i*137)%boardSize,80+(i*83)%boardSize,2+(i%3),1.5,0,0,Math.PI*2);ctx.fill()}
+ // inner edge bevel
+ ctx.strokeStyle='#e2b47688';ctx.lineWidth=8;ctx.strokeRect(min+4,min+4,boardSize-8,boardSize-8);
+ const l=current();
+ // obstacle blocks
+ for(const [x,y,w,h] of l.walls){
+   ctx.fillStyle='#0005';roundRect(ctx,x+5,y+8,w,h,7);ctx.fill();
+   const wg=ctx.createLinearGradient(x,y,x+w,y+h);wg.addColorStop(0,'#9b7956');wg.addColorStop(.5,'#6d5038');wg.addColorStop(1,'#493323');
+   roundRect(ctx,x,y,w,h,6);ctx.fillStyle=wg;ctx.fill();ctx.strokeStyle='#d1a477';ctx.lineWidth=3;ctx.stroke();
+   ctx.strokeStyle='#ffffff20';ctx.lineWidth=2;ctx.beginPath();ctx.moveTo(x+7,y+7);ctx.lineTo(x+w-7,y+7);ctx.stroke();
+ }
+ // holes
+ for(let i=0;i<l.holes.length;i++)hole(l.holes[i][0],l.holes[i][1],l.holes[i][2],false);
+ hole(l.goal[0],l.goal[1],35,true);
+ // ball shadow and sphere
+ ctx.save();ctx.translate(ball.x+6,ball.y+9);ctx.scale(1,.62);const sh=ctx.createRadialGradient(0,0,2,0,0,ball.r*1.6);sh.addColorStop(0,'#0009');sh.addColorStop(1,'#0000');ctx.fillStyle=sh;ctx.beginPath();ctx.arc(0,0,ball.r*1.6,0,Math.PI*2);ctx.fill();ctx.restore();
+ const bg=ctx.createRadialGradient(ball.x-7,ball.y-9,2,ball.x+2,ball.y+3,ball.r*1.55);bg.addColorStop(0,'#ffffff');bg.addColorStop(.22,'#e9edf0');bg.addColorStop(.58,'#9ca9b2');bg.addColorStop(.82,'#53616c');bg.addColorStop(1,'#202b34');
+ ctx.beginPath();ctx.arc(ball.x,ball.y,ball.r,0,Math.PI*2);ctx.fillStyle=bg;ctx.fill();ctx.strokeStyle='#dce4e9';ctx.lineWidth=2;ctx.stroke();
+ ctx.beginPath();ctx.arc(ball.x-6,ball.y-7,4,0,Math.PI*2);ctx.fillStyle='#fff9';ctx.fill();
+ // ball motion streak subtle
+ ctx.restore();
+ // tilt indicator
+ ctx.fillStyle='#1c2732cc';roundRect(ctx,260,26,200,34,12);ctx.fill();
+ ctx.fillStyle='#f4d18b';ctx.font='bold 13px system-ui';ctx.textAlign='center';ctx.fillText('TILT  '+(tiltX>=0?'+':'')+tiltX.toFixed(1)+'°  /  '+(tiltY>=0?'+':'')+tiltY.toFixed(1)+'°',360,48);
+}
+function hole(x,y,r,target){
+ ctx.save();ctx.translate(x,y);
+ ctx.beginPath();ctx.ellipse(0,5,r*1.18,r*.82,0,0,Math.PI*2);ctx.fillStyle='#0006';ctx.fill();
+ const hg=ctx.createRadialGradient(-r*.2,-r*.25,2,0,0,r);hg.addColorStop(0,target?'#080d08':'#080a0d');hg.addColorStop(.65,target?'#111d0d':'#12161b');hg.addColorStop(1,target?'#4e672b':'#58616a');ctx.beginPath();ctx.arc(0,0,r,0,Math.PI*2);ctx.fillStyle=hg;ctx.fill();
+ ctx.strokeStyle=target?'#d6e88b':'#65717a';ctx.lineWidth=target?5:3;ctx.stroke();
+ if(target){ctx.shadowColor='#d9f28a';ctx.shadowBlur=20;ctx.strokeStyle='#e6f5a6';ctx.lineWidth=2;ctx.beginPath();ctx.arc(0,0,r+5,0,Math.PI*2);ctx.stroke();ctx.shadowBlur=0;ctx.fillStyle='#e9f6b7';ctx.font='bold 12px system-ui';ctx.textAlign='center';ctx.fillText('GOAL',0,-r-12)}
+ ctx.restore();
+}
+function gravityFromEvent(e){
+ if(e.beta==null||e.gamma==null)return;
+ if(baseBeta===null){baseBeta=e.beta;baseGamma=e.gamma}
+ const beta=e.beta-baseBeta,gamma=e.gamma-baseGamma;
+ // Landscape/portrait mapping: screen's x follows gamma and y follows beta.
+ tiltX=Math.max(-35,Math.min(35,gamma));tiltY=Math.max(-35,Math.min(35,beta));
+}
+async function enableMotion(){
+ const btn=document.getElementById('enable');
+ try{
+  if(typeof DeviceOrientationEvent==='undefined'){setStatus('This browser does not expose phone orientation sensors.');return}
+  if(typeof DeviceOrientationEvent.requestPermission==='function'){
+    const permission=await DeviceOrientationEvent.requestPermission();
+    if(permission!=='granted'){setStatus('Motion permission was not granted.');return}
+  }
+  window.addEventListener('deviceorientation',gravityFromEvent,true);
+  sensorReady=true;baseBeta=baseGamma=null;btn.textContent='Motion enabled';btn.disabled=true;
+  setStatus('Motion enabled. Hold flat to calibrate, then tilt gently.');
+ }catch(err){setStatus('Could not enable motion. Use HTTPS and allow sensor permission.')}
+}
+function end(w){
+ active=false;won=w;dead=!w;
+ const o=document.getElementById('overlay');o.className='overlay show'+(w?'':' fail');
+ document.getElementById('result').textContent=w?'GOAL REACHED!':'BALL LOST!';
+ document.getElementById('resultText').textContent=w?'Perfect balance. You guided the ball into the correct hole.':'The ball fell into a wrong hole or off the board. Try again!';
+ document.getElementById('next').textContent=w?'Next level':'Try again';
+ setStatus(w?'Level complete!':'Game over.');
+}
+function step(t){
+ const dt=Math.min((t-lastTime)/1000||.016,.033);lastTime=t;
+ if(active){
+   // tilt angles create acceleration; friction damps motion
+   const ax=Math.sin(tiltX*Math.PI/180)*620, ay=Math.sin(tiltY*Math.PI/180)*620;
+   ball.vx+=ax*dt;ball.vy+=ay*dt;
+   const friction=Math.pow(.986,dt*60);ball.vx*=friction;ball.vy*=friction;
+   const speed=Math.hypot(ball.vx,ball.vy),maxSpeed=430;if(speed>maxSpeed){ball.vx*=maxSpeed/speed;ball.vy*=maxSpeed/speed}
+   ball.x+=ball.vx*dt;ball.y+=ball.vy*dt;
+   const l=current();
+   // blocks: circle-vs-rectangle collision with a little restitution
+   for(const [x,y,w,h] of l.walls){
+    const cx=Math.max(x,Math.min(ball.x,x+w)),cy=Math.max(y,Math.min(ball.y,y+h));
+    let dx=ball.x-cx,dy=ball.y-cy,d=Math.hypot(dx,dy);
+    if(d<ball.r){
+      if(d===0){const opts=[{v:Math.abs(ball.x-x),nx:-1,ny:0},{v:Math.abs(ball.x-(x+w)),nx:1,ny:0},{v:Math.abs(ball.y-y),nx:0,ny:-1},{v:Math.abs(ball.y-(y+h)),nx:0,ny:1}].sort((a,b)=>a.v-b.v);dx=opts[0].nx;dy=opts[0].ny;d=1}
+      const nx=dx/d,ny=dy/d;ball.x+=nx*(ball.r-d);ball.y+=ny*(ball.r-d);
+      const vn=ball.vx*nx+ball.vy*ny;if(vn<0){ball.vx-=1.45*vn*nx;ball.vy-=1.45*vn*ny}
+    }
+   }
+   // Edge is a fatal drop
+   if(ball.x<min+ball.r*.25||ball.x>max-ball.r*.25||ball.y<min+ball.r*.25||ball.y>max-ball.r*.25){end(false)}
+   // Hole capture: if ball centre enters a hole radius, it drops
+   if(active){
+    for(const [x,y,r] of l.holes){if(Math.hypot(ball.x-x,ball.y-y)<r*.78){end(false);break}}
+    if(active&&Math.hypot(ball.x-l.goal[0],ball.y-l.goal[1])<35*.72){end(true)}
+   }
+ }
+ draw();requestAnimationFrame(step);
+}
+document.getElementById('enable').addEventListener('click',enableMotion);
+document.getElementById('calibrate').addEventListener('click',()=>{baseBeta=null;baseGamma=null;tiltX=tiltY=0;setStatus('Calibration reset. Keep the phone level for a moment.');});
+document.getElementById('restart').addEventListener('click',reset);
+document.getElementById('next').addEventListener('click',()=>{if(won)level=(level+1)%levels.length;reset()});
+window.addEventListener('keydown',e=>{const k=e.key.toLowerCase();if(k==='arrowleft'||k==='a')tiltX=-12;if(k==='arrowright'||k==='d')tiltX=12;if(k==='arrowup'||k==='w')tiltY=-12;if(k==='arrowdown'||k==='s')tiltY=12;if(k===' ')tiltX=tiltY=0});
+window.addEventListener('keyup',e=>{if(['ArrowLeft','ArrowRight','ArrowUp','ArrowDown','a','d','w','s'].includes(e.key))tiltX=tiltY=0});
+reset();requestAnimationFrame(step);
+})();
+</script>
+</body>
+</html>
