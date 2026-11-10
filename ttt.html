@@ -46,19 +46,19 @@ footer{text-align:center;color:#7f8c9c;font-size:10px;margin-top:16px}
  <div class="stat"><span>Target</span><b>GOLD</b></div>
 </div>
 <div class="stage"><canvas id="game" width="720" height="720" aria-label="Tilt maze game board"></canvas></div>
-<div class="status" id="status">Tap “Enable motion” and gently tilt your phone.</div>
+<div class="status" id="status">Tilt your phone gently to roll the ball.</div>
 <div class="controls">
- <button class="primary" id="enable">Enable motion</button>
  <button id="calibrate">Calibrate level</button>
+ <button id="soundToggle">🔊 Sound on</button>
  <button id="restart">Restart</button>
 </div>
 <div class="overlay" id="overlay"><b id="result">You won!</b><p id="resultText">The ball reached the target.</p><button class="primary" id="next">Next level</button></div>
 <div class="instructions">
  <strong>How to play</strong><br>
- 1. Hold your phone flat and tap <strong>Enable motion</strong>. Allow motion/orientation access if asked.<br>
+ 1. Hold your phone flat. Motion sensing starts automatically when the page opens.<br>
  2. Tilt your phone gently to roll the ball. Tap <strong>Calibrate level</strong> whenever the board is resting flat in your hands.<br>
  3. Reach the glowing golden hole. Any dark hole or the board edge is a fall — game over.<br>
- <span style="color:#92a4b7">Tip: Play in portrait orientation. Motion sensors generally require HTTPS (or localhost).</span>
+ <span style="color:#92a4b7">Tip: Play in portrait orientation. Motion sensors generally require HTTPS (or localhost). Sound starts after your first tap.</span>
 </div>
 <footer>Designed for mobile browsers · No external libraries or assets</footer>
 </main>
@@ -80,7 +80,7 @@ function reset(){
  const l=current();ball.x=l.start[0];ball.y=l.start[1];ball.vx=ball.vy=0;
  active=true;won=dead=false;document.getElementById('overlay').className='overlay';
  document.getElementById('level').textContent=String(level+1).padStart(2,'0');
- setStatus(sensorReady?'Tilt gently to roll the ball.':'Enable motion to control the board.');
+ setStatus(sensorReady?'Tilt gently to roll the ball.':'Waiting for phone motion sensor…');
  draw();
 }
 function roundRect(c,x,y,w,h,r){c.beginPath();c.roundRect(x,y,w,h,r)}
@@ -115,9 +115,6 @@ function draw(){
  ctx.beginPath();ctx.arc(ball.x-6,ball.y-7,4,0,Math.PI*2);ctx.fillStyle='#fff9';ctx.fill();
  // ball motion streak subtle
  ctx.restore();
- // tilt indicator
- ctx.fillStyle='#1c2732cc';roundRect(ctx,260,26,200,34,12);ctx.fill();
- ctx.fillStyle='#f4d18b';ctx.font='bold 13px system-ui';ctx.textAlign='center';ctx.fillText('TILT  '+(tiltX>=0?'+':'')+tiltX.toFixed(1)+'°  /  '+(tiltY>=0?'+':'')+tiltY.toFixed(1)+'°',360,48);
 }
 function hole(x,y,r,target){
  ctx.save();ctx.translate(x,y);
@@ -134,27 +131,68 @@ function gravityFromEvent(e){
  // Landscape/portrait mapping: screen's x follows gamma and y follows beta.
  tiltX=Math.max(-35,Math.min(35,gamma));tiltY=Math.max(-35,Math.min(35,beta));
 }
-async function enableMotion(){
- const btn=document.getElementById('enable');
- try{
-  if(typeof DeviceOrientationEvent==='undefined'){setStatus('This browser does not expose phone orientation sensors.');return}
-  if(typeof DeviceOrientationEvent.requestPermission==='function'){
-    const permission=await DeviceOrientationEvent.requestPermission();
-    if(permission!=='granted'){setStatus('Motion permission was not granted.');return}
-  }
-  window.addEventListener('deviceorientation',gravityFromEvent,true);
-  sensorReady=true;baseBeta=baseGamma=null;btn.textContent='Motion enabled';btn.disabled=true;
-  setStatus('Motion enabled. Hold flat to calibrate, then tilt gently.');
- }catch(err){setStatus('Could not enable motion. Use HTTPS and allow sensor permission.')}
+function startMotionSensors(){
+ if(typeof DeviceOrientationEvent==='undefined'){
+   setStatus('This browser does not expose phone orientation sensors.');
+   return;
+ }
+ window.removeEventListener('deviceorientation',gravityFromEvent,true);
+ window.addEventListener('deviceorientation',gravityFromEvent,true);
+ sensorReady=true;
+ setStatus('Motion sensor starting. Hold the phone level and tap Calibrate level.');
 }
 function end(w){
- active=false;won=w;dead=!w;
+ active=false;won=w;dead=!w;endSound(w);
  const o=document.getElementById('overlay');o.className='overlay show'+(w?'':' fail');
  document.getElementById('result').textContent=w?'GOAL REACHED!':'BALL LOST!';
  document.getElementById('resultText').textContent=w?'Perfect balance. You guided the ball into the correct hole.':'The ball fell into a wrong hole or off the board. Try again!';
  document.getElementById('next').textContent=w?'Next level':'Try again';
  setStatus(w?'Level complete!':'Game over.');
 }
+// Procedural sound effects: rolling rumble, wooden taps, hole drop and success/failure tones.
+let audioCtx=null, rollSource=null, rollGain=null, rollFilter=null, soundOn=true, lastImpactAt=0;
+function unlockAudio(){
+ if(!soundOn)return null;
+ try{
+  audioCtx ||= new (window.AudioContext||window.webkitAudioContext)();
+  if(audioCtx.state==='suspended')audioCtx.resume();
+  return audioCtx;
+ }catch(e){return null}
+}
+function updateRollingSound(speed){
+ const c=unlockAudio(); if(!c)return;
+ if(!rollSource){
+   const n=c.sampleRate*2,buf=c.createBuffer(1,n,c.sampleRate),data=buf.getChannelData(0);
+   for(let i=0;i<n;i++)data[i]=(Math.random()*2-1)*.7;
+   rollSource=c.createBufferSource();rollSource.buffer=buf;rollSource.loop=true;
+   rollFilter=c.createBiquadFilter();rollFilter.type='lowpass';rollFilter.frequency.value=260;
+   rollGain=c.createGain();rollGain.gain.value=0;
+   rollSource.connect(rollFilter);rollFilter.connect(rollGain);rollGain.connect(c.destination);rollSource.start();
+ }
+ const level=soundOn?Math.min(.20,Math.max(0,(speed-10)/360)*.20):0;
+ rollGain.gain.setTargetAtTime(level,c.currentTime,.07);
+ rollFilter.frequency.setTargetAtTime(140+Math.min(speed,400)*2.1,c.currentTime,.08);
+}
+function impactSound(strength=.5){
+ const c=unlockAudio();if(!c)return;
+ const now=c.currentTime;
+ if(now-lastImpactAt<.12)return;lastImpactAt=now;
+ const o=c.createOscillator(),g=c.createGain(),f=c.createBiquadFilter();
+ o.type='triangle';o.frequency.setValueAtTime(105+strength*65,now);o.frequency.exponentialRampToValueAtTime(48,now+.09);
+ f.type='lowpass';f.frequency.value=420;
+ g.gain.setValueAtTime(.0001,now);g.gain.exponentialRampToValueAtTime(.13*strength,now+.008);g.gain.exponentialRampToValueAtTime(.0001,now+.13);
+ o.connect(f);f.connect(g);g.connect(c.destination);o.start(now);o.stop(now+.14);
+}
+function endSound(w){
+ const c=unlockAudio();if(!c)return;
+ updateRollingSound(0);
+ if(w){
+   [523,659,784,1047].forEach((f,i)=>{const o=c.createOscillator(),g=c.createGain(),t=c.currentTime+i*.12;o.type='sine';o.frequency.value=f;g.gain.setValueAtTime(.0001,t);g.gain.exponentialRampToValueAtTime(.17,t+.025);g.gain.exponentialRampToValueAtTime(.0001,t+.36);o.connect(g);g.connect(c.destination);o.start(t);o.stop(t+.38)});
+ }else{
+   const o=c.createOscillator(),g=c.createGain(),t=c.currentTime;o.type='sawtooth';o.frequency.setValueAtTime(150,t);o.frequency.exponentialRampToValueAtTime(42,t+.48);g.gain.setValueAtTime(.0001,t);g.gain.exponentialRampToValueAtTime(.22,t+.025);g.gain.exponentialRampToValueAtTime(.0001,t+.52);o.connect(g);g.connect(c.destination);o.start(t);o.stop(t+.54);
+ }
+}
+document.addEventListener('pointerdown',()=>unlockAudio(),{once:true});
 function step(t){
  const dt=Math.min((t-lastTime)/1000||.016,.033);lastTime=t;
  if(active){
@@ -164,6 +202,7 @@ function step(t){
    const friction=Math.pow(.986,dt*60);ball.vx*=friction;ball.vy*=friction;
    const speed=Math.hypot(ball.vx,ball.vy),maxSpeed=430;if(speed>maxSpeed){ball.vx*=maxSpeed/speed;ball.vy*=maxSpeed/speed}
    ball.x+=ball.vx*dt;ball.y+=ball.vy*dt;
+   updateRollingSound(Math.hypot(ball.vx,ball.vy));
    const l=current();
    // blocks: circle-vs-rectangle collision with a little restitution
    for(const [x,y,w,h] of l.walls){
@@ -172,7 +211,7 @@ function step(t){
     if(d<ball.r){
       if(d===0){const opts=[{v:Math.abs(ball.x-x),nx:-1,ny:0},{v:Math.abs(ball.x-(x+w)),nx:1,ny:0},{v:Math.abs(ball.y-y),nx:0,ny:-1},{v:Math.abs(ball.y-(y+h)),nx:0,ny:1}].sort((a,b)=>a.v-b.v);dx=opts[0].nx;dy=opts[0].ny;d=1}
       const nx=dx/d,ny=dy/d;ball.x+=nx*(ball.r-d);ball.y+=ny*(ball.r-d);
-      const vn=ball.vx*nx+ball.vy*ny;if(vn<0){ball.vx-=1.45*vn*nx;ball.vy-=1.45*vn*ny}
+      const vn=ball.vx*nx+ball.vy*ny;if(vn<0){ball.vx-=1.45*vn*nx;ball.vy-=1.45*vn*ny;impactSound(Math.min(1,Math.abs(vn)/300))}
     }
    }
    // Edge is a fatal drop
@@ -185,13 +224,22 @@ function step(t){
  }
  draw();requestAnimationFrame(step);
 }
-document.getElementById('enable').addEventListener('click',enableMotion);
-document.getElementById('calibrate').addEventListener('click',()=>{baseBeta=null;baseGamma=null;tiltX=tiltY=0;setStatus('Calibration reset. Keep the phone level for a moment.');});
-document.getElementById('restart').addEventListener('click',reset);
+document.getElementById('calibrate').addEventListener('click',()=>{
+ unlockAudio();
+ baseBeta=null;baseGamma=null;tiltX=tiltY=0;
+ setStatus('Calibration reset. Hold the phone level for a moment.');
+});
+document.getElementById('soundToggle').addEventListener('click',e=>{
+ soundOn=!soundOn;
+ e.currentTarget.textContent=soundOn?'🔊 Sound on':'🔇 Sound off';
+ if(!soundOn&&rollGain&&audioCtx)rollGain.gain.setTargetAtTime(0,audioCtx.currentTime,.05);
+ else if(soundOn){unlockAudio();updateRollingSound(Math.hypot(ball.vx,ball.vy));}
+});
+document.getElementById('restart').addEventListener('click',()=>{unlockAudio();reset()});
 document.getElementById('next').addEventListener('click',()=>{if(won)level=(level+1)%levels.length;reset()});
 window.addEventListener('keydown',e=>{const k=e.key.toLowerCase();if(k==='arrowleft'||k==='a')tiltX=-12;if(k==='arrowright'||k==='d')tiltX=12;if(k==='arrowup'||k==='w')tiltY=-12;if(k==='arrowdown'||k==='s')tiltY=12;if(k===' ')tiltX=tiltY=0});
 window.addEventListener('keyup',e=>{if(['ArrowLeft','ArrowRight','ArrowUp','ArrowDown','a','d','w','s'].includes(e.key))tiltX=tiltY=0});
-reset();requestAnimationFrame(step);
+startMotionSensors();reset();requestAnimationFrame(step);
 })();
 </script>
 </body>
