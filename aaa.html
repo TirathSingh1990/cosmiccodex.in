@@ -36,10 +36,14 @@ button{cursor:pointer;font-weight:650}button.primary{background:#147c58;border-c
   <div class="top">
     <div class="brand">🧭 Route HUD</div>
     <div class="search">
-      <input id="destination" placeholder="Search destination (e.g. Clock Tower, Dehradun)" autocomplete="off">
-      <button id="searchBtn">Search</button>
+      <input id="fromPlace" placeholder="From: My location or any place" autocomplete="off">
+      <button id="fromBtn">Set From</button>
     </div>
-    <button id="locBtn">My location</button>
+    <div class="search">
+      <input id="destination" placeholder="To: Search destination" autocomplete="off">
+      <button id="searchBtn">Set To</button>
+    </div>
+    <button id="locBtn">Use my location</button>
   </div>
   <div id="map"></div>
   <div class="bottom">
@@ -70,7 +74,7 @@ button{cursor:pointer;font-weight:650}button.primary{background:#147c58;border-c
 (() => {
 const $=id=>document.getElementById(id);
 const status=t=>$('status').textContent=t;
-let map, me=null, dest=null, routeCoords=[], routeLayer=null, meMarker=null, destMarker=null;
+let map, me=null, routeStart=null, routeStartIsGps=true, dest=null, routeCoords=[], routeLayer=null, meMarker=null, originMarker=null, destMarker=null;
 let watchId=null, navOn=false, heading=0, speed=0, routeSteps=[], stepIndex=0, totalMeters=0, remainingMeters=0, mirror=false;
 let hudMap=null, hudRouteLayer=null, hudPositionMarker=null, routeDurationSeconds=0;
 const mapReady=typeof L!=='undefined';
@@ -82,7 +86,12 @@ function setMyLocation(lat,lon,acc=0){
   me=[lat,lon];
   if(!meMarker)meMarker=L.marker(me,{icon:icon('#2684ff')}).addTo(map).bindPopup('Your location');
   else meMarker.setLatLng(me);
-  $('routeBtn').disabled=!dest;
+  if(routeStartIsGps){
+    routeStart=me;
+    if(!originMarker)originMarker=L.marker(routeStart,{icon:icon('#39f5a5')}).addTo(map).bindPopup('Route start: My location');
+    else originMarker.setLatLng(routeStart);
+  }
+  $('routeBtn').disabled=!routeStart||!dest;
   if(navOn)updateNavigation();
  if(hudMap && $('hud').style.display==='block'){
    if(hudPositionMarker)hudPositionMarker.setLatLng(me);
@@ -116,12 +125,38 @@ async function geocode(q){
   map.setView(dest,15);
  }catch(e){status('Search failed. Check internet connection.');}
 }
+async function geocodeFrom(q){
+ status('Searching starting point…');
+ try{
+  const u='https://nominatim.openstreetmap.org/search?format=jsonv2&limit=1&q='+encodeURIComponent(q);
+  const r=await fetch(u,{headers:{'Accept-Language':'en'}});
+  const d=await r.json();
+  if(!d.length){status('Starting place not found. Try a more specific name.');return;}
+  routeStart=[+d[0].lat,+d[0].lon];routeStartIsGps=false;
+  if(originMarker)map.removeLayer(originMarker);
+  originMarker=L.marker(routeStart,{icon:icon('#39f5a5')}).addTo(map).bindPopup('Route start: '+d[0].display_name.split(',').slice(0,2).join(','));
+  $('fromPlace').value=d[0].display_name.split(',').slice(0,2).join(',');
+  $('routeBtn').disabled=!dest;
+  map.setView(routeStart,15);
+  status('Starting point set. Now choose destination and build route.');
+ }catch(e){status('Starting point search failed. Check internet connection.');}
+}
+function useGpsAsOrigin(){
+ if(!me){locate();status('Getting GPS first. Tap Use my location again when GPS is ready.');return;}
+ routeStart=me;routeStartIsGps=true;
+ if(originMarker)map.removeLayer(originMarker);
+ originMarker=L.marker(routeStart,{icon:icon('#39f5a5')}).addTo(map).bindPopup('Route start: My location');
+ $('fromPlace').value='My location';
+ $('routeBtn').disabled=!dest;
+ map.setView(routeStart,15);
+ status('Route start set to your current GPS location.');
+}
 function fmtDist(m){return m>=1000?(m/1000).toFixed(1)+' km':Math.round(m)+' m';}
 async function buildRoute(){
- if(!me||!dest){status('First set your location and destination.');return;}
+ if(!routeStart||!dest){status('Set both From and To locations first.');return;}
  status('Finding road route…');
  try{
-  const url=`https://router.project-osrm.org/route/v1/driving/${me[1]},${me[0]};${dest[1]},${dest[0]}?overview=full&geometries=geojson&steps=true`;
+  const url=`https://router.project-osrm.org/route/v1/driving/${routeStart[1]},${routeStart[0]};${dest[1]},${dest[0]}?overview=full&geometries=geojson&steps=true`;
   const res=await fetch(url);const data=await res.json();
   if(data.code!=='Ok'||!data.routes?.length){status('No driving route found for these points.');return;}
   const r=data.routes[0];routeCoords=r.geometry.coordinates.map(c=>[c[1],c[0]]);
@@ -215,13 +250,17 @@ function openHud(){
  if(!navOn)status('HUD preview. Start navigation for live GPS tracking.');
 }
 function closeHud(){$('hud').style.display='none';}
-$('locBtn').onclick=locate;$('searchBtn').onclick=()=>{if($('destination').value.trim())geocode($('destination').value.trim());};
+$('locBtn').onclick=()=>{locate();useGpsAsOrigin();};
+$('fromBtn').onclick=()=>{const q=$('fromPlace').value.trim();if(!q||q.toLowerCase()==='my location')useGpsAsOrigin();else geocodeFrom(q);};
+$('searchBtn').onclick=()=>{if($('destination').value.trim())geocode($('destination').value.trim());};
 $('destination').addEventListener('keydown',e=>{if(e.key==='Enter')$('searchBtn').click();});
+$('fromPlace').addEventListener('keydown',e=>{if(e.key==='Enter')$('fromBtn').click();});
 $('routeBtn').onclick=buildRoute;$('startBtn').onclick=startNav;$('hudBtn').onclick=openHud;$('exitHud').onclick=closeHud;
 $('mirrorBtn').onclick=()=>{mirror=!mirror;$('hud').classList.toggle('hud-mirror',mirror);$('mirrorBtn').textContent='Mirror: '+(mirror?'On':'Off');};
 window.addEventListener('resize',()=>{if($('hud').style.display==='block'&&hudMap)hudMap.invalidateSize();});
 $('hud').addEventListener('touchmove',e=>e.preventDefault(),{passive:false});
 locate();
+setTimeout(()=>{if($('fromPlace'))$('fromPlace').value='My location';},0);
 })();
 </script>
 </body>
