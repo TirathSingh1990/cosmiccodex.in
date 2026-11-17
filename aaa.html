@@ -1,0 +1,213 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Route HUD Navigation</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<style>
+:root{--accent:#39f5a5;--blue:#2684ff;--bg:#080d12;--panel:#111a22;--text:#edf5f7;--muted:#9fb0bc}
+*{box-sizing:border-box}html,body{margin:0;width:100%;height:100%;font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;background:var(--bg);color:var(--text)}
+#app{height:100%;display:flex;flex-direction:column}.top{padding:10px 12px;background:#101820;display:flex;gap:8px;align-items:center;flex-wrap:wrap;z-index:500}
+.brand{font-weight:800;letter-spacing:.3px;margin-right:auto}.search{display:flex;gap:6px;flex:1 1 260px}.search input{min-width:0;flex:1}
+input,button{border:1px solid #344653;border-radius:10px;padding:11px 12px;font:inherit;color:var(--text);background:#0b1218}
+button{cursor:pointer;font-weight:650}button.primary{background:#147c58;border-color:#1aa875}button:disabled{opacity:.45;cursor:not-allowed}
+#map{flex:1;min-height:180px}.bottom{background:#101820;padding:10px 12px;display:flex;gap:8px;align-items:center;flex-wrap:wrap;z-index:500}
+.status{font-size:13px;color:var(--muted);flex:1 1 100%}.pill{font-size:13px;background:#1b2a34;padding:7px 10px;border-radius:999px}
+#hud{display:none;position:fixed;inset:0;background:#000;z-index:2000;color:white;overflow:hidden;touch-action:manipulation}
+#hudCanvas{position:absolute;inset:0;width:100%;height:100%}
+.hud-top{position:absolute;top:env(safe-area-inset-top,12px);left:0;right:0;text-align:center;padding:22px 12px 0;text-shadow:0 0 14px #00ff9d}
+#maneuver{font-size:clamp(24px,5vw,42px);font-weight:800;color:var(--accent);letter-spacing:1px}
+#nextdist{font-size:clamp(16px,3vw,24px);margin-top:5px;color:#d8fff0}
+.hud-bottom{position:absolute;bottom:calc(env(safe-area-inset-bottom,0px) + 20px);left:0;right:0;display:flex;justify-content:center;gap:12px;align-items:center;flex-wrap:wrap}
+.hud-stat{min-width:100px;text-align:center;color:var(--accent);font-size:clamp(18px,4vw,28px);font-weight:750;text-shadow:0 0 12px #00ff9d}
+.hud-stat small{display:block;font-size:11px;color:#9db9ad;letter-spacing:1px}
+.hud-exit{position:absolute;right:14px;top:calc(env(safe-area-inset-top,0px) + 12px);background:#111;border-color:#3a5147}
+.hud-mirror #hudCanvas{transform:scaleX(-1)}
+.leaflet-control-attribution{font-size:9px!important}
+@media(max-width:600px){.brand{width:100%}.top{gap:6px}.bottom button{flex:1}.search{flex-basis:100%}}
+</style>
+</head>
+<body>
+<div id="app">
+  <div class="top">
+    <div class="brand">🧭 Route HUD</div>
+    <div class="search">
+      <input id="destination" placeholder="Search destination (e.g. Clock Tower, Dehradun)" autocomplete="off">
+      <button id="searchBtn">Search</button>
+    </div>
+    <button id="locBtn">My location</button>
+  </div>
+  <div id="map"></div>
+  <div class="bottom">
+    <span class="pill" id="distance">Distance: —</span>
+    <span class="pill" id="duration">Time: —</span>
+    <button id="routeBtn" class="primary" disabled>Build route</button>
+    <button id="startBtn" disabled>Start navigation</button>
+    <button id="hudBtn" disabled>HUD mode</button>
+    <div class="status" id="status">Allow location access, then search a destination or tap the map.</div>
+  </div>
+</div>
+<div id="hud">
+  <canvas id="hudCanvas"></canvas>
+  <div class="hud-top"><div id="maneuver">FOLLOW THE ROUTE</div><div id="nextdist">Select a destination</div></div>
+  <button class="hud-exit" id="exitHud">Exit HUD</button>
+  <div class="hud-bottom">
+    <div class="hud-stat" id="hudSpeed">—<small>KM/H</small></div>
+    <div class="hud-stat" id="hudRemain">—<small>REMAINING</small></div>
+    <button id="mirrorBtn">Mirror: Off</button>
+  </div>
+</div>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+(() => {
+const $=id=>document.getElementById(id);
+const status=t=>$('status').textContent=t;
+let map, me=null, dest=null, routeCoords=[], routeLayer=null, meMarker=null, destMarker=null;
+let watchId=null, navOn=false, heading=0, speed=0, routeSteps=[], stepIndex=0, totalMeters=0, remainingMeters=0, mirror=false;
+const mapReady=typeof L!=='undefined';
+if(!mapReady){status('Map library could not load. Check your internet connection.');return;}
+map=L.map('map',{zoomControl:true}).setView([30.3165,78.0322],13);
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:19,attribution:'© OpenStreetMap contributors'}).addTo(map);
+const icon=(color)=>L.divIcon({className:'',html:`<div style="width:18px;height:18px;border-radius:50%;background:${color};border:3px solid white;box-shadow:0 0 0 5px ${color}44"></div>`,iconSize:[18,18],iconAnchor:[9,9]});
+function setMyLocation(lat,lon,acc=0){
+  me=[lat,lon];
+  if(!meMarker)meMarker=L.marker(me,{icon:icon('#2684ff')}).addTo(map).bindPopup('Your location');
+  else meMarker.setLatLng(me);
+  $('routeBtn').disabled=!dest;
+  if(navOn)updateNavigation();
+}
+function locate(){
+ if(!navigator.geolocation){status('This browser does not support GPS.');return;}
+ status('Getting your GPS location…');
+ navigator.geolocation.getCurrentPosition(p=>{
+  setMyLocation(p.coords.latitude,p.coords.longitude,p.coords.accuracy);
+  map.setView(me,16);status(`GPS located (accuracy about ${Math.round(p.coords.accuracy)} m).`);
+ },e=>status('Location error: '+e.message+'. Use HTTPS/localhost and allow location permission.'),{enableHighAccuracy:true,timeout:15000,maximumAge:3000});
+}
+function setDestination(lat,lon,label='Destination'){
+ dest=[lat,lon];
+ if(destMarker)map.removeLayer(destMarker);
+ destMarker=L.marker(dest,{icon:icon('#ef4e65')}).addTo(map).bindPopup(label).openPopup();
+ $('routeBtn').disabled=!me;
+ $('status').textContent='Destination selected. Tap Build route.';
+}
+map.on('click',e=>setDestination(e.latlng.lat,e.latlng.lng));
+async function geocode(q){
+ status('Searching destination…');
+ try{
+  const u='https://nominatim.openstreetmap.org/search?format=jsonv2&limit=1&q='+encodeURIComponent(q);
+  const r=await fetch(u,{headers:{'Accept-Language':'en'}});
+  const d=await r.json();
+  if(!d.length){status('Place not found. Try a more specific name.');return;}
+  setDestination(+d[0].lat,+d[0].lon,d[0].display_name.split(',').slice(0,2).join(','));
+  map.setView(dest,15);
+ }catch(e){status('Search failed. Check internet connection.');}
+}
+function fmtDist(m){return m>=1000?(m/1000).toFixed(1)+' km':Math.round(m)+' m';}
+async function buildRoute(){
+ if(!me||!dest){status('First set your location and destination.');return;}
+ status('Finding road route…');
+ try{
+  const url=`https://router.project-osrm.org/route/v1/driving/${me[1]},${me[0]};${dest[1]},${dest[0]}?overview=full&geometries=geojson&steps=true`;
+  const res=await fetch(url);const data=await res.json();
+  if(data.code!=='Ok'||!data.routes?.length){status('No driving route found for these points.');return;}
+  const r=data.routes[0];routeCoords=r.geometry.coordinates.map(c=>[c[1],c[0]]);
+  routeSteps=r.legs.flatMap(l=>l.steps).filter(s=>s.maneuver);
+  totalMeters=r.distance;remainingMeters=r.distance;stepIndex=0;
+  if(routeLayer)map.removeLayer(routeLayer);
+  routeLayer=L.polyline(routeCoords,{color:'#1677ff',weight:6,opacity:.9}).addTo(map);
+  map.fitBounds(routeLayer.getBounds(),{padding:[35,35]});
+  $('distance').textContent='Distance: '+fmtDist(totalMeters);
+  $('duration').textContent='Time: '+Math.round(r.duration/60)+' min';
+  $('startBtn').disabled=false;$('hudBtn').disabled=false;
+  status('Route ready. Start navigation, then switch to HUD mode.');
+  updateInstruction();
+ }catch(e){status('Routing service unavailable. Check internet connection and try again.');}
+}
+function dist(a,b){const R=6371000,rad=x=>x*Math.PI/180,dLat=rad(b[0]-a[0]),dLon=rad(b[1]-a[1]),x=Math.sin(dLat/2)**2+Math.cos(rad(a[0]))*Math.cos(rad(b[0]))*Math.sin(dLon/2)**2;return 2*R*Math.asin(Math.sqrt(x));}
+function nearestRouteIndex(pos){
+ let best=0,bd=Infinity;for(let i=0;i<routeCoords.length;i++){let d=dist(pos,routeCoords[i]);if(d<bd){bd=d;best=i;}}return best;
+}
+function updateNavigation(){
+ if(!me||!routeCoords.length)return;
+ const idx=nearestRouteIndex(me);remainingMeters=0;
+ for(let i=idx;i<routeCoords.length-1;i++)remainingMeters+=dist(routeCoords[i],routeCoords[i+1]);
+ if(idx<routeCoords.length-1){const a=routeCoords[idx],b=routeCoords[idx+1];heading=(Math.atan2(Math.sin((b[1]-a[1])*Math.PI/180)*Math.cos(b[0]*Math.PI/180),Math.cos(a[0]*Math.PI/180)*Math.sin(b[0]*Math.PI/180)-Math.sin(a[0]*Math.PI/180)*Math.cos(b[0]*Math.PI/180)*Math.cos((b[1]-a[1])*Math.PI/180))*180/Math.PI+360)%360;}
+ while(stepIndex<routeSteps.length-1 && routeSteps[stepIndex].distance<15)stepIndex++;
+ updateInstruction();
+ if(routeLayer)routeLayer.setStyle({color:'#1677ff'});
+}
+function instructionText(s){
+ if(!s)return 'FOLLOW THE ROUTE';
+ const t=s.maneuver.type, m=s.maneuver.modifier||'';
+ if(t==='arrive')return 'YOU HAVE ARRIVED';
+ if(t==='depart')return 'START';
+ if(m.includes('left'))return 'TURN LEFT';
+ if(m.includes('right'))return 'TURN RIGHT';
+ if(m==='uturn')return 'MAKE A U-TURN';
+ if(t==='roundabout'||t==='rotary')return 'ENTER ROUNDABOUT';
+ if(t==='new name'||t==='continue'||t==='end of road')return 'CONTINUE STRAIGHT';
+ return 'FOLLOW THE ROUTE';
+}
+function updateInstruction(){
+ const s=routeSteps[stepIndex];
+ $('maneuver').textContent=instructionText(s);
+ $('nextdist').textContent=s?`${fmtDist(s.distance)} to next instruction`:`${fmtDist(remainingMeters)} remaining`;
+ $('hudRemain').innerHTML=`${fmtDist(remainingMeters)}<small>REMAINING</small>`;
+}
+function startNav(){
+ if(!routeCoords.length)return;
+ navOn=true;status('Navigation running. Keep this page open for live GPS updates.');
+ if(navigator.geolocation){
+  if(watchId!==null)navigator.geolocation.clearWatch(watchId);
+  watchId=navigator.geolocation.watchPosition(p=>{
+   setMyLocation(p.coords.latitude,p.coords.longitude,p.coords.accuracy);
+   if(p.coords.heading!=null&&!Number.isNaN(p.coords.heading))heading=p.coords.heading;
+   speed=p.coords.speed||0;$('hudSpeed').innerHTML=`${Math.round(speed*3.6)}<small>KM/H</small>`;
+   if(navOn)map.panTo(me,{animate:true,duration:.4});
+  },e=>status('GPS update error: '+e.message),{enableHighAccuracy:true,maximumAge:1000,timeout:15000});
+ }
+ $('startBtn').textContent='Stop navigation';$('startBtn').onclick=stopNav;
+}
+function stopNav(){
+ navOn=false;if(watchId!==null)navigator.geolocation.clearWatch(watchId);watchId=null;
+ $('startBtn').textContent='Start navigation';$('startBtn').onclick=startNav;status('Navigation stopped.');
+}
+function drawHud(){
+ const c=$('hudCanvas'),ctx=c.getContext('2d'),dpr=window.devicePixelRatio||1,w=innerWidth,h=innerHeight;
+ c.width=w*dpr;c.height=h*dpr;ctx.setTransform(dpr,0,0,dpr,0,0);ctx.clearRect(0,0,w,h);
+ if(routeCoords.length<2)return;
+ const idx=nearestRouteIndex(me||routeCoords[0]), centerX=w/2, baseY=h*.78;
+ const lookAhead=routeCoords.slice(idx,Math.min(idx+90,routeCoords.length));
+ const metersPerPixel=Math.max(1.3,remainingMeters/Math.max(200,w*1.4));
+ const lat0=(me||routeCoords[idx])[0],lon0=(me||routeCoords[idx])[1],cos=Math.cos(lat0*Math.PI/180);
+ const rot=-(heading*Math.PI/180);
+ const pts=lookAhead.map(p=>{
+  const east=(p[1]-lon0)*111320*cos,north=(p[0]-lat0)*111320;
+  const rx=east*Math.cos(rot)-north*Math.sin(rot),ry=east*Math.sin(rot)+north*Math.cos(rot);
+  return [centerX+rx/metersPerPixel,baseY-ry/metersPerPixel];
+ });
+ ctx.save();ctx.lineCap='round';ctx.lineJoin='round';
+ ctx.shadowColor='#00ff9d';ctx.shadowBlur=20;ctx.strokeStyle='#00e995';ctx.lineWidth=7;ctx.beginPath();
+ pts.forEach((p,i)=>i?ctx.lineTo(p[0],p[1]):ctx.moveTo(p[0],p[1]));ctx.stroke();
+ ctx.shadowBlur=0;ctx.strokeStyle='#d9fff0';ctx.lineWidth=2.2;ctx.beginPath();pts.forEach((p,i)=>i?ctx.lineTo(p[0],p[1]):ctx.moveTo(p[0],p[1]));ctx.stroke();
+ // vehicle marker
+ ctx.translate(centerX,baseY+24);ctx.fillStyle='#fff';ctx.shadowColor='#00ff9d';ctx.shadowBlur=18;ctx.beginPath();ctx.moveTo(0,-24);ctx.lineTo(17,17);ctx.lineTo(0,9);ctx.lineTo(-17,17);ctx.closePath();ctx.fill();ctx.restore();
+}
+function openHud(){
+ $('hud').style.display='block';$('hud').classList.toggle('hud-mirror',mirror);drawHud();
+ if(!navOn)status('HUD preview. Start navigation for live GPS tracking.');
+}
+function closeHud(){$('hud').style.display='none';}
+$('locBtn').onclick=locate;$('searchBtn').onclick=()=>{if($('destination').value.trim())geocode($('destination').value.trim());};
+$('destination').addEventListener('keydown',e=>{if(e.key==='Enter')$('searchBtn').click();});
+$('routeBtn').onclick=buildRoute;$('startBtn').onclick=startNav;$('hudBtn').onclick=openHud;$('exitHud').onclick=closeHud;
+$('mirrorBtn').onclick=()=>{mirror=!mirror;$('hud').classList.toggle('hud-mirror',mirror);$('mirrorBtn').textContent='Mirror: '+(mirror?'On':'Off');};
+window.addEventListener('resize',()=>{if($('hud').style.display==='block')drawHud();});
+$('hud').addEventListener('touchmove',e=>e.preventDefault(),{passive:false});
+locate();
+})();
+</script>
+</body>
+</html>
